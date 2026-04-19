@@ -27,7 +27,7 @@ func main() {
 	ctx := context.Background()
 
 	// 1. Lock to IPv4 localhost to bypass firewall roulette
-	h, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	h, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/0"))
 	if err != nil {
 		fmt.Printf("Fatal host error: %v\n", err)
 		return
