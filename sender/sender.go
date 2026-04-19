@@ -1,4 +1,3 @@
-// sender.go
 package main
 
 import (
@@ -9,71 +8,96 @@ import (
 	"os"
 
 	"github.com/libp2p/go-libp2p"
-	dht "github.com/libp2p/go-libp2p-kad-dht"
-	"github.com/libp2p/go-libp2p/p2p/discovery/routing"
+	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 )
 
-func main() {
-	if len(os.Args) < 2 {
-		fmt.Println("Usage: go run sender.go <worker-multiaddr>")
+type senderNotifee struct {
+	h    host.Host
+	ctx  context.Context
+	done chan bool
+}
+
+func (n *senderNotifee) HandlePeerFound(pi peer.AddrInfo) {
+	// Skip ourselves
+	if pi.ID == n.h.ID() {
 		return
 	}
 
-	h, _ := libp2p.New(libp2p.NoListenAddrs)
-	defer h.Close()
-
-	kDHT, _ := dht.New(context.Background(), h)
-	kDHT.Bootstrap(context.Background())
-
-	routingDiscovery := routing.NewRoutingDiscovery(kDHT)
-	rendezvousString := "mesh-zero-compute-pool-v1"
-
-	fmt.Println("Searching for Mesh-Zero workers...")
-
-	peerChan, _ := routingDiscovery.FindPeers(context.Background(), rendezvousString)
-
-	for peer := range peerChan {
-		if peer.ID == h.ID() {
-			continue
-		}
-
-		fmt.Printf("Found Worker Node: %s! Connecting...\n", peer.ID)
-
-		h.Connect(context.Background(), peer)
-
-		s, _ := h.NewStream(context.Background(), peer.ID, "/mesh-zero/task/1.0.0")
-		defer s.Close()
-
-		wasmBytes, err := os.ReadFile("task.wasm")
-		if err != nil {
-			fmt.Printf("FATAL: Could not read task.wasm: %v\n", err)
-			return
-		}
-		if len(wasmBytes) < 8 {
-			fmt.Printf("FATAL: task.wasm is too small (%d bytes). Not a valid WASM.\n", len(wasmBytes))
-			return
-		}
-
-		paramBytes := []byte(`{"vector": [0.1, 0.5, 0.9], "k": 5}`)
-
-		fmt.Printf("[SENDER] WASM Size: %d bytes\n", len(wasmBytes))
-		fmt.Printf("[SENDER] Param Size: %d bytes\n", len(paramBytes))
-
-		header := make([]byte, 12)
-		copy(header[:4], "MZ01") // Magic Number
-		binary.BigEndian.PutUint32(header[4:8], uint32(len(wasmBytes)))
-		binary.BigEndian.PutUint32(header[8:12], uint32(len(paramBytes)))
-
-		// 8. Blast the Payload over the stream
-		s.Write(header)
-		s.Write(wasmBytes)
-		s.Write(paramBytes)
-
-		// 9. Read the stream to see the WASM execution output!
-		fmt.Println("Payload sent. Waiting for execution results...")
-		io.Copy(os.Stdout, s)
-
-		break
+	// Wait for the OS to attach IP addresses to the mDNS broadcast
+	if len(pi.Addrs) == 0 {
+		return
 	}
 
+	fmt.Printf("\n[mDNS] Found Worker: %s\n", pi.ID)
+	fmt.Printf(" -> Available IPs: %v\n", pi.Addrs)
+
+	// Attempt Connection (NO PANICS ALLOWED)
+	err := n.h.Connect(n.ctx, pi)
+	if err != nil {
+		fmt.Printf(" -> Connection skipped (likely unroutable interface): %v\n", err)
+		return
+	}
+
+	fmt.Println(" -> Connection established! Opening stream...")
+
+	s, err := n.h.NewStream(n.ctx, pi.ID, "/mesh-zero/task/1.0.0")
+	if err != nil {
+		fmt.Printf(" -> Failed to open stream: %v\n", err)
+		return
+	}
+	defer s.Close()
+
+	// Ensure the file exists
+	wasmBytes, err := os.ReadFile("task.wasm")
+	if err != nil {
+		fmt.Printf(" -> FATAL: Could not read task.wasm: %v\n", err)
+		n.done <- true
+		return
+	}
+
+	paramBytes := []byte(`{"vector": [0.1, 0.5, 0.9], "k": 5}`)
+
+	// Construct and send payload
+	header := make([]byte, 12)
+	copy(header[:4], "MZ01")
+	binary.BigEndian.PutUint32(header[4:8], uint32(len(wasmBytes)))
+	binary.BigEndian.PutUint32(header[8:12], uint32(len(paramBytes)))
+
+	s.Write(header)
+	s.Write(wasmBytes)
+	s.Write(paramBytes)
+
+	fmt.Println(" -> Payload sent! Waiting for execution results...")
+	io.Copy(os.Stdout, s)
+
+	n.done <- true // Signal main loop to exit
+}
+
+func main() {
+	// 1. Force the sender to use IPv4 localhost as well
+	h, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	if err != nil {
+		fmt.Printf("Fatal host error: %v\n", err)
+		return
+	}
+	defer h.Close()
+
+	ctx := context.Background()
+	done := make(chan bool)
+
+	// 2. Start mDNS
+	rendezvous := "mesh-zero-local-v1"
+	notifee := &senderNotifee{h: h, ctx: ctx, done: done}
+
+	mdnsService := mdns.NewMdnsService(h, rendezvous, notifee)
+	if err := mdnsService.Start(); err != nil {
+		fmt.Printf("Fatal mDNS error: %v\n", err)
+		return
+	}
+
+	fmt.Println("Scanning local network for Mesh-Zero workers...")
+	<-done // Wait until payload executes successfully
+	fmt.Println("Task complete. Shutting down sender.")
 }

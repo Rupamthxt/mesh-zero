@@ -7,55 +7,48 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/libp2p/go-libp2p"
-	// "github.com/libp2p/go-libp2p/core/host"
-	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-libp2p/p2p/discovery/routing"
-	"github.com/libp2p/go-libp2p/p2p/discovery/util"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	"github.com/tetratelabs/wazero"
+	"github.com/tetratelabs/wazero/api"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )
 
+type discoveryNotifee struct{}
+
+func (n *discoveryNotifee) HandlePeerFound(pi peer.AddrInfo) {
+	fmt.Printf("[mDNS] Worker saw peer on network: %s\n", pi.ID)
+}
+
 func main() {
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
+	ctx := context.Background()
 
-	h, err := libp2p.New(
-		libp2p.ListenAddrStrings("/ip4/0.0.0.0/udp/0/quic-v1"),
-		libp2p.EnableRelay(),
-	)
-
+	// 1. Lock to IPv4 localhost to bypass firewall roulette
+	h, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
 	if err != nil {
-		panic(err)
+		fmt.Printf("Fatal host error: %v\n", err)
+		return
 	}
+	defer h.Close()
 
-	kDHT, _ := dht.New(ctx, h)
-
-	if err = kDHT.Bootstrap(ctx); err != nil {
-		panic(err)
-	}
-
-	routingDiscovery := routing.NewRoutingDiscovery(kDHT)
-	rendezvousString := "mesh-zero-compute-pool-v1"
-	util.Advertise(ctx, routingDiscovery, rendezvousString)
-	fmt.Println("Worker announced to DHT. Waiting for tasks...")
-
-	// addr := fmt.Sprintf("%s/p2p/%s", h.Addrs()[0].String(), h.ID().String())
-	// fmt.Printf("Worker Node listening on: %s\n", addr)
-
+	// 2. Set up the Stream Handler
 	h.SetStreamHandler("/mesh-zero/task/1.0.0", func(s network.Stream) {
 		handleTaskStream(ctx, s)
 	})
 
-	fmt.Printf("Node started with ID: %s\n", h.ID())
+	// 3. Start mDNS Discovery
+	rendezvous := "mesh-zero-local-v1"
+	mdnsService := mdns.NewMdnsService(h, rendezvous, &discoveryNotifee{})
+	if err := mdnsService.Start(); err != nil {
+		fmt.Printf("Fatal mDNS error: %v\n", err)
+		return
+	}
 
-	<-ctx.Done()
-	fmt.Println("\nShutting down Mesh-Zero node...")
-	h.Close()
+	fmt.Printf("Worker Node %s listening on Localhost. Waiting for tasks...\n", h.ID())
+	select {} // Block forever
 }
 
 func handleTaskStream(ctx context.Context, s network.Stream) {
@@ -63,12 +56,9 @@ func handleTaskStream(ctx context.Context, s network.Stream) {
 
 	header := make([]byte, 12)
 	if _, err := io.ReadFull(s, header); err != nil {
-		fmt.Fprintf(s, "Stream error: Failed to read header: %v\n", err)
 		return
 	}
-
 	if string(header[:4]) != "MZ01" {
-		fmt.Fprintf(s, "Protocol error: Expected MZ01, got %s\n", string(header[:4]))
 		return
 	}
 
@@ -76,25 +66,12 @@ func handleTaskStream(ctx context.Context, s network.Stream) {
 	paramLen := binary.BigEndian.Uint32(header[8:12])
 
 	wasmBin := make([]byte, wasmLen)
-	if _, err := io.ReadFull(s, wasmBin); err != nil {
-		fmt.Fprintf(s, "Stream error: Failed to read WASM: %v\n", err)
-		return
-	}
+	io.ReadFull(s, wasmBin)
 
 	paramBin := make([]byte, paramLen)
-	if _, err := io.ReadFull(s, paramBin); err != nil {
-		fmt.Fprintf(s, "Stream error: Failed to read Params: %v\n", err)
-		return
-	}
+	io.ReadFull(s, paramBin)
 
-	fmt.Printf("[WORKER] Received Header Magic: %s\n", string(header[:4]))
-	fmt.Printf("[WORKER] Unpacked WASM Size: %d bytes\n", len(wasmBin))
-	fmt.Printf("[WORKER] Unpacked Param Size: %d bytes\n", len(paramBin))
-
-	if len(wasmBin) >= 4 {
-		fmt.Printf("[WORKER] WASM Signature: %x\n", wasmBin[:4])
-	}
-
+	fmt.Printf("\n[WORKER] Task Received! WASM: %dB, Params: %dB\n", wasmLen, paramLen)
 	runWasmTask(ctx, wasmBin, paramBin, s)
 }
 
@@ -103,6 +80,18 @@ func runWasmTask(ctx context.Context, wasmBytes []byte, params []byte, out io.Wr
 	defer r.Close(ctx)
 
 	wasi_snapshot_preview1.MustInstantiate(ctx, r)
+
+	// --- THE MEMORY ENGINE HOOK (Path B) ---
+	_, _ = r.NewHostModuleBuilder("env").
+		NewFunctionBuilder().
+		WithFunc(func(ctx context.Context, mod api.Module, vectorID uint32, ptr uint32) {
+			fmt.Printf("[HOST] WASM requested Vector ID: %d. Injecting data from simulated mmap...\n", vectorID)
+			simulatedVector := []byte(`[0.12, 0.88, 0.45]`)
+			mod.Memory().Write(ptr, simulatedVector)
+		}).
+		Export("fetch_vector").
+		Instantiate(ctx)
+	// ---------------------------------------
 
 	compiledMod, err := r.CompileModule(ctx, wasmBytes)
 	if err != nil {
