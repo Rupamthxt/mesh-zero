@@ -2,6 +2,8 @@ module github.com/rumpamthxt/mesh-zero
 
 go 1.25.7
 
+require github.com/libp2p/go-libp2p v0.48.0
+
 require (
 	filippo.io/bigmod v0.1.1-0.20260103110540-f8a47775ebe5 // indirect
 	filippo.io/keygen v0.0.0-20260114151900-8e2790ea4c5b // indirect
@@ -32,7 +34,6 @@ require (
 	github.com/libp2p/go-buffer-pool v0.1.0 // indirect
 	github.com/libp2p/go-cidranger v1.1.0 // indirect
 	github.com/libp2p/go-flow-metrics v0.3.0 // indirect
-	github.com/libp2p/go-libp2p v0.48.0 // indirect
 	github.com/libp2p/go-libp2p-asn-util v0.4.1 // indirect
 	github.com/libp2p/go-libp2p-kad-dht v0.39.0 // indirect
 	github.com/libp2p/go-libp2p-kbucket v0.8.0 // indirect
