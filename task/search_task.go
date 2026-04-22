@@ -6,7 +6,7 @@ import (
 	"os"
 )
 
-func main() {
+func mainn() {
 	input, err := io.ReadAll(os.Stdin)
 	if err != nil {
 		fmt.Printf("Error reading params: %v\n", err)

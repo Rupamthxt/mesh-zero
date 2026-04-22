@@ -69,15 +69,21 @@ func (n *senderNotifee) HandlePeerFound(pi peer.AddrInfo) {
 	n.hasSent = true // WE CLAIM THE TASK!
 	n.mu.Unlock()
 
-	// Ensure the file exists
-	wasmBytes, err := os.ReadFile("task.wasm")
+	wasmFile := os.Args[1]
+	wasmBytes, err := os.ReadFile(wasmFile)
 	if err != nil {
 		fmt.Printf(" -> FATAL: Could not read task.wasm: %v\n", err)
 		n.done <- true
 		return
 	}
 
-	paramBytes := []byte(`{"vector": [0.1, 0.5, 0.9], "k": 5}`)
+	inputFile := os.Args[2]
+	paramBytes, err := os.ReadFile(inputFile)
+	if err != nil {
+		fmt.Printf(" FATAL: Could not read input file %s\n", inputFile)
+		n.done <- true
+		return
+	}
 
 	taskId := uint64(time.Now().UnixNano())
 
@@ -99,6 +105,11 @@ func (n *senderNotifee) HandlePeerFound(pi peer.AddrInfo) {
 }
 
 func main() {
+	if len(os.Args) < 3 {
+		fmt.Println("Usage: go run sender.go <task.wasm> <input.data>")
+		os.Exit(1)
+	}
+
 	// Force the sender to use IPv4 localhost as well
 	h, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/0"))
 	if err != nil {
