@@ -1,4 +1,4 @@
-package main
+package sender
 
 import (
 	"context"
@@ -16,11 +16,13 @@ import (
 )
 
 type senderNotifee struct {
-	h       host.Host
-	ctx     context.Context
-	done    chan bool
-	mu      sync.Mutex
-	hasSent bool
+	h         host.Host
+	ctx       context.Context
+	wasmPath  string
+	inputPath string
+	done      chan bool
+	mu        sync.Mutex
+	hasSent   bool
 }
 
 func (n *senderNotifee) HandlePeerFound(pi peer.AddrInfo) {
@@ -35,7 +37,6 @@ func (n *senderNotifee) HandlePeerFound(pi peer.AddrInfo) {
 		return
 	}
 
-	// Wait for the OS to attach IP addresses to the mDNS broadcast
 	if len(pi.Addrs) == 0 {
 		return
 	}
@@ -44,7 +45,6 @@ func (n *senderNotifee) HandlePeerFound(pi peer.AddrInfo) {
 	fmt.Printf(" -> Available IPs: %v\n", pi.Addrs)
 	fmt.Printf("\n[mDNS] Attempting Worker: %s\n", pi.ID)
 
-	// Attempt Connection (NO PANICS ALLOWED)
 	err := n.h.Connect(n.ctx, pi)
 	if err != nil {
 		fmt.Printf(" -> Connection skipped (likely unroutable interface): %v\n", err)
@@ -61,15 +61,14 @@ func (n *senderNotifee) HandlePeerFound(pi peer.AddrInfo) {
 	defer s.Close()
 	n.mu.Lock()
 	if n.hasSent {
-		// We were beaten by another thread just milliseconds ago.
 		s.Close()
 		n.mu.Unlock()
 		return
 	}
-	n.hasSent = true // WE CLAIM THE TASK!
+	n.hasSent = true
 	n.mu.Unlock()
 
-	wasmFile := os.Args[1]
+	wasmFile := n.wasmPath
 	wasmBytes, err := os.ReadFile(wasmFile)
 	if err != nil {
 		fmt.Printf(" -> FATAL: Could not read task.wasm: %v\n", err)
@@ -77,7 +76,7 @@ func (n *senderNotifee) HandlePeerFound(pi peer.AddrInfo) {
 		return
 	}
 
-	inputFile := os.Args[2]
+	inputFile := n.inputPath
 	paramBytes, err := os.ReadFile(inputFile)
 	if err != nil {
 		fmt.Printf(" FATAL: Could not read input file %s\n", inputFile)
@@ -87,7 +86,6 @@ func (n *senderNotifee) HandlePeerFound(pi peer.AddrInfo) {
 
 	taskId := uint64(time.Now().UnixNano())
 
-	// Construct and send payload
 	header := make([]byte, 20)
 	copy(header[:4], "MZ02")
 	binary.BigEndian.PutUint64(header[4:12], taskId)
@@ -101,16 +99,10 @@ func (n *senderNotifee) HandlePeerFound(pi peer.AddrInfo) {
 	fmt.Println(" -> Payload sent! Waiting for execution results...")
 	io.Copy(os.Stdout, s)
 
-	n.done <- true // Signal main loop to exit
+	n.done <- true
 }
 
-func main() {
-	if len(os.Args) < 3 {
-		fmt.Println("Usage: go run sender.go <task.wasm> <input.data>")
-		os.Exit(1)
-	}
-
-	// Force the sender to use IPv4 localhost as well
+func RunSender(wasmPath, inputPath string) {
 	h, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/0"))
 	if err != nil {
 		fmt.Printf("Fatal host error: %v\n", err)
@@ -121,9 +113,8 @@ func main() {
 	ctx := context.Background()
 	done := make(chan bool)
 
-	// Start mDNS
 	rendezvous := "mesh-zero-local-v1"
-	notifee := &senderNotifee{h: h, ctx: ctx, done: done}
+	notifee := &senderNotifee{h: h, ctx: ctx, done: done, wasmPath: wasmPath, inputPath: inputPath}
 
 	mdnsService := mdns.NewMdnsService(h, rendezvous, notifee)
 	if err := mdnsService.Start(); err != nil {
@@ -132,6 +123,6 @@ func main() {
 	}
 
 	fmt.Println("Scanning local network for Mesh-Zero workers...")
-	<-done // Wait until payload executes successfully
+	<-done
 	fmt.Println("Task complete. Shutting down sender.")
 }

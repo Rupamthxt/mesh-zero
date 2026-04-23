@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"sync"
 
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
+	"github.com/rupamthxt/mesh-zero/sender"
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
@@ -28,9 +30,84 @@ var completedTasks = make(map[uint64]bool)
 var taskMu sync.Mutex
 
 func main() {
+
+	if len(os.Args) < 2 {
+		printUsage()
+		os.Exit(1)
+	}
+
+	command := os.Args[1]
+
+	switch command {
+	case "worker":
+		handleWorkerCommand()
+	case "run":
+		if len(os.Args) < 4 {
+			fmt.Println("Usage: mesh-zero run <task.wasm> <input.data>")
+			os.Exit(1)
+		}
+		wasmPath := os.Args[2]
+		inputPath := os.Args[3]
+		fmt.Printf("Submitting %s to the mesh...\n", wasmPath)
+		sender.RunSender(wasmPath, inputPath)
+	default:
+		fmt.Printf("Unknown command: %s\n", command)
+		printUsage()
+	}
+
+}
+
+func printUsage() {
+	fmt.Printf(`Mesh-Zero: Decentralized Compute Node
+		Usage:
+		mesh-zero worker start    - Run the node in the foreground
+		mesh-zero worker daemon   - Run the node silently in the background
+		mesh-zero run <file>      - Submit a WASM task to the mesh
+		\n`)
+}
+
+func handleWorkerCommand() {
+	if len(os.Args) < 3 {
+		fmt.Println("Usage: mesh-zero worker [start|daemon]")
+		os.Exit(1)
+	}
+
+	subCommand := os.Args[2]
+	if subCommand == "start" {
+		fmt.Println("Starting Mesh-Zero Node in foreground...")
+		runWorkerNode()
+		return
+	}
+
+	if subCommand == "daemon" {
+		fmt.Println("Spawning Mesh-Zero daemon...")
+
+		binaryPath, _ := os.Executable()
+		cmd := exec.Command(binaryPath, "worker", "start")
+
+		logFile, err := os.OpenFile("mesh-zero.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+		if err != nil {
+			fmt.Printf("Failed to open log file: %v\n", err)
+			return
+		}
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+
+		err = cmd.Start()
+		if err != nil {
+			fmt.Printf("Failed to start daemon: %v\n", err)
+			return
+		}
+
+		fmt.Printf("Daemon running in background. (PID: %d)\n", cmd.Process.Pid)
+		fmt.Println("Check mesh-zero.log for node output.")
+		os.Exit(0)
+	}
+}
+
+func runWorkerNode() {
 	ctx := context.Background()
 
-	// Lock to IPv4 localhost to bypass firewall roulette
 	h, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/0"))
 	if err != nil {
 		fmt.Printf("Fatal host error: %v\n", err)
@@ -38,12 +115,10 @@ func main() {
 	}
 	defer h.Close()
 
-	// Set up the Stream Handler
 	h.SetStreamHandler("/mesh-zero/task/1.0.0", func(s network.Stream) {
 		handleTaskStream(ctx, s)
 	})
 
-	// Start mDNS Discovery
 	rendezvous := "mesh-zero-local-v1"
 	mdnsService := mdns.NewMdnsService(h, rendezvous, &discoveryNotifee{})
 	if err := mdnsService.Start(); err != nil {
@@ -95,7 +170,6 @@ func runWasmTask(ctx context.Context, wasmBytes []byte, params []byte, out io.Wr
 
 	wasi_snapshot_preview1.MustInstantiate(ctx, r)
 
-	// --- THE MEMORY ENGINE HOOK (Path B) ---
 	_, _ = r.NewHostModuleBuilder("env").
 		NewFunctionBuilder().
 		WithFunc(func(ctx context.Context, mod api.Module, vectorID uint32, ptr uint32) {
@@ -105,7 +179,6 @@ func runWasmTask(ctx context.Context, wasmBytes []byte, params []byte, out io.Wr
 		}).
 		Export("fetch_vector").
 		Instantiate(ctx)
-	// ---------------------------------------
 
 	compiledMod, err := r.CompileModule(ctx, wasmBytes)
 	if err != nil {

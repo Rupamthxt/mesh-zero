@@ -1,4 +1,4 @@
-module github.com/rumpamthxt/mesh-zero
+module github.com/rupamthxt/mesh-zero
 
 go 1.25.7
 
