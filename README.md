@@ -27,7 +27,7 @@ To eliminate HTTP overhead, Mesh-Zero nodes communicate via multiplexed `libp2p`
 | **TaskID** | `uint64` | 8 Bytes | Unique ID to prevent double-execution across the mesh. |
 | **WasmLen** | `uint32` | 4 Bytes | Byte size of the executable payload. |
 | **ParamLen**| `uint32` | 4 Bytes | Byte size of the Stdin parameter data. |
-| *Payload* | `[]byte` | Variable | The `.wasm` binary followed immediately by the input data. |
+| **Payload** | `[]byte` | Variable | The `.wasm` binary followed immediately by the input data. |
 
 ---
 
@@ -94,5 +94,5 @@ Output:
 Mesh-Zero is an evolving systems architecture. Next phases include:
 * **[ ] VectraDB `mmap` Integration:** Connect the WASM sandbox directly to on-disk vector databases.
 * **[ ] Compute Fuel/Gas Limits:** Implement deterministic execution limits via cooperative heartbeats to prevent infinite loops.
-* **[ ] Daemonization CLI:** Wrap the node in a robust CLI (`mesh-zero daemon start`) for silent background operation.
+* **[✅] Daemonization CLI:** Wrap the node in a robust CLI (`mesh-zero daemon start`) for silent background operation.
 * **[ ] IoT Gateway Pattern:** Implement a BLE scanner to allow Micro-IoT devices (like smart thermometers) to act as peripheral sensors for the mesh.

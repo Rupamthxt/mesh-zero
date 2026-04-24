@@ -8,7 +8,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"sync"
+	"syscall"
 
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -62,6 +64,7 @@ func printUsage() {
 		Usage:
 		mesh-zero worker start    - Run the node in the foreground
 		mesh-zero worker daemon   - Run the node silently in the background
+		mesh-zero worker stop	  - Stop the background daemon
 		mesh-zero run <file>      - Submit a WASM task to the mesh
 		\n`)
 }
@@ -99,9 +102,41 @@ func handleWorkerCommand() {
 			return
 		}
 
+		pidStr := fmt.Sprintf("%d", cmd.Process.Pid)
+		os.WriteFile("mesh-zero.pid", []byte(pidStr), 0644)
+
 		fmt.Printf("Daemon running in background. (PID: %d)\n", cmd.Process.Pid)
 		fmt.Println("Check mesh-zero.log for node output.")
 		os.Exit(0)
+	}
+
+	if subCommand == "stop" {
+		pidBytes, err := os.ReadFile("mesh-zero.pid")
+		if err != nil {
+			fmt.Println("Could not find mesh-zero.pid. Is the daemon running?")
+			return
+		}
+		pid, err := strconv.Atoi(string(pidBytes))
+		if err != nil {
+			fmt.Printf("Invalid PID in file")
+			return
+		}
+
+		process, err := os.FindProcess(pid)
+		if err != nil {
+			fmt.Printf("Failed to find process: %v\n", err)
+			return
+		}
+
+		err = process.Signal(syscall.SIGTERM)
+		if err != nil {
+			fmt.Printf("Failed to stop daemon: %v\n", err)
+			return
+		}
+
+		os.Remove("mesh-zero.pid")
+		fmt.Printf("Successfully stopped Mesh-zero daemon (PID: %d)\n", pid)
+		return
 	}
 }
 
