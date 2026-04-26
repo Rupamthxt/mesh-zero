@@ -41,14 +41,22 @@ var taskMu sync.Mutex
 
 func (w *Worker) Start(ctx context.Context) error {
 
+	var relays []peer.AddrInfo
+	for _, peerAddr := range dht.DefaultBootstrapPeers {
+		peerInfo, err := peer.AddrInfoFromP2pAddr(peerAddr)
+		if err == nil {
+			relays = append(relays, *peerInfo)
+		}
+	}
+
 	var kdht *dht.IpfsDHT
 	h, err := libp2p.New(
 		libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/0"),
 		libp2p.NATPortMap(),
-		libp2p.EnableRelay(),
+		libp2p.EnableAutoRelayWithStaticRelays(relays),
 		libp2p.Routing(func(n host.Host) (routing.PeerRouting, error) {
 			var dhtErr error
-			kdht, dhtErr = dht.New(ctx, n, dht.Mode(dht.ModeServer))
+			kdht, dhtErr = dht.New(ctx, n, dht.Mode(dht.ModeAuto))
 			return kdht, dhtErr
 		}),
 	)
@@ -121,7 +129,7 @@ func (w *Worker) Start(ctx context.Context) error {
 		return nil
 	}
 
-	fmt.Printf("Worker Node %s listening on Localhost. Waiting for tasks...\n", h.ID())
+	fmt.Printf("Worker Node %s listening. Waiting for tasks...\n", h.ID())
 	select {}
 }
 
