@@ -6,7 +6,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"os"
+
+	// "os"
 	"sync"
 	"time"
 
@@ -171,8 +172,13 @@ func (w *Worker) handleTaskStream(ctx context.Context, s network.Stream) {
 }
 
 func (w *Worker) runWasmTask(ctx context.Context, wasmBytes []byte, paramBytes []byte, out io.Writer) {
-	r := wazero.NewRuntime(ctx)
-	defer r.Close(ctx)
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	config := wazero.NewRuntimeConfig().WithMemoryLimitPages(100)
+	r := wazero.NewRuntimeWithConfig(ctx, config)
+	defer r.Close(timeoutCtx)
 
 	wasi_snapshot_preview1.MustInstantiate(ctx, r)
 
@@ -183,20 +189,25 @@ func (w *Worker) runWasmTask(ctx context.Context, wasmBytes []byte, paramBytes [
 		}
 	}
 
-	compiledMod, err := r.CompileModule(ctx, wasmBytes)
+	compiledMod, err := r.CompileModule(timeoutCtx, wasmBytes)
 	if err != nil {
 		fmt.Fprintf(out, "Compilation error: %v\n", err)
 		return
 	}
 
-	config := wazero.NewModuleConfig().
-		WithStdin(bytes.NewReader(paramBytes)).
+	mod, err := r.InstantiateModule(timeoutCtx, compiledMod, wazero.NewModuleConfig().
 		WithStdout(out).
-		WithStderr(os.Stderr)
+		WithStderr(out).
+		WithStdin(bytes.NewReader(paramBytes)))
 
-	_, err = r.InstantiateModule(ctx, compiledMod, config)
 	if err != nil {
-		fmt.Fprintf(out, "Execution error: %v\n", err)
+		if timeoutCtx.Err() == context.DeadlineExceeded {
+			fmt.Fprintf(out, "[SYSTEM KILL] Task exceeded 5-second execution limit.\n")
+		} else {
+			fmt.Fprintf(out, "Execution failed: %v\n", err)
+		}
+		return
 	}
+	mod.Close(timeoutCtx)
 
 }
