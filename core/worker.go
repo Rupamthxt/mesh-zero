@@ -6,8 +6,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-
-	// "os"
 	"sync"
 	"time"
 
@@ -17,8 +15,6 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/routing"
-
-	// "github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
 	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
 	"github.com/tetratelabs/wazero"
