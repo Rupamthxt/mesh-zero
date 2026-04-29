@@ -1,4 +1,4 @@
-# Mesh-Zero
+# MeshØ
 
 ![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)
 ![License](https://img.shields.io/badge/License-MIT-blue.svg)

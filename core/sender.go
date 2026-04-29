@@ -2,7 +2,9 @@ package core
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -86,11 +88,26 @@ func (n *senderNotifee) HandlePeerFound(pi peer.AddrInfo) {
 
 	taskId := uint64(time.Now().UnixNano())
 
-	header := make([]byte, 20)
-	copy(header[:4], "MZ02")
+	privHex := os.Getenv("MESH_PRIV_KEY")
+	if privHex == "" {
+		fmt.Println("[SECURITY] Missing MESH_PRIV_KEY. Cannot sign payload.")
+		return
+	}
+	privKey, _ := hex.DecodeString(privHex)
+
+	signData := make([]byte, 16)
+	binary.BigEndian.PutUint64(signData[0:8], taskId)
+	binary.BigEndian.PutUint32(signData[8:12], uint32(len(wasmBytes)))
+	binary.BigEndian.PutUint32(signData[12:16], uint32(len(paramBytes)))
+
+	signature := ed25519.Sign(ed25519.PrivateKey(privKey), signData)
+
+	header := make([]byte, 84)
+	copy(header[:4], "MZ03")
 	binary.BigEndian.PutUint64(header[4:12], taskId)
 	binary.BigEndian.PutUint32(header[12:16], uint32(len(wasmBytes)))
 	binary.BigEndian.PutUint32(header[16:20], uint32(len(paramBytes)))
+	copy(header[20:84], signature)
 
 	s.Write(header)
 	s.Write(wasmBytes)

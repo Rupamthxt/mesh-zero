@@ -2,12 +2,15 @@ package core
 
 import (
 	"context"
+	"crypto/ed25519"
 	_ "embed"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -16,7 +19,6 @@ import (
 //go:embed dashboard.html
 var dashboardHTML []byte
 
-// StartAPIServer boots the local HTTP gateway on port 8080
 func (w *Worker) StartAPIServer(port string) {
 	mux := http.NewServeMux()
 
@@ -28,7 +30,6 @@ func (w *Worker) StartAPIServer(port string) {
 		res.Write(dashboardHTML)
 	})
 
-	// Wrap with a simple CORS middleware
 	handler := corsMiddleware(mux)
 
 	fmt.Printf("[API] Local Gateway listening on http://localhost:%s\n", port)
@@ -37,14 +38,12 @@ func (w *Worker) StartAPIServer(port string) {
 	}
 }
 
-// ENDPOINT 1: Get Connected Peers
 func (w *Worker) handleGetPeers(res http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodGet {
 		http.Error(res, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Ask libp2p for all actively connected peers
 	peerList := w.Host.Network().Peers()
 
 	targetRendezvous := "mesh-zero-local-v1"
@@ -65,14 +64,12 @@ func (w *Worker) handleGetPeers(res http.ResponseWriter, req *http.Request) {
 	})
 }
 
-// ENDPOINT 2: Execute WASM Payload
 func (w *Worker) handleExecuteTask(res http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
 		http.Error(res, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// 1. Parse the multipart form (Max 10MB)
 	req.ParseMultipartForm(10 << 20)
 
 	wasmFile, _, err := req.FormFile("wasm")
@@ -97,7 +94,6 @@ func (w *Worker) handleExecuteTask(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// 2. Find the requested peer in the network
 	peers := w.Host.Network().Peers()
 	var selectedPeer *peer.ID
 	for _, p := range peers {
@@ -112,7 +108,6 @@ func (w *Worker) handleExecuteTask(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// 3. Open the libp2p stream
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -123,26 +118,39 @@ func (w *Worker) handleExecuteTask(res http.ResponseWriter, req *http.Request) {
 	}
 	defer s.Close()
 
-	// 4. Construct the MZ02 Header & Blast Payload
-	taskID := uint64(time.Now().UnixNano())
-	header := make([]byte, 20)
-	copy(header[:4], "MZ02")
-	binary.BigEndian.PutUint64(header[4:12], taskID)
+	taskId := uint64(time.Now().UnixNano())
+
+	privHex := os.Getenv("MESH_PRIV_KEY")
+	if privHex == "" {
+		fmt.Println("[SECURITY] Missing MESH_PRIV_KEY. Cannot sign payload.")
+		return
+	}
+	privKey, _ := hex.DecodeString(privHex)
+
+	signData := make([]byte, 16)
+	binary.BigEndian.PutUint64(signData[0:8], taskId)
+	binary.BigEndian.PutUint32(signData[8:12], uint32(len(wasmBytes)))
+	binary.BigEndian.PutUint32(signData[12:16], uint32(len(dataBytes)))
+
+	signature := ed25519.Sign(ed25519.PrivateKey(privKey), signData)
+
+	header := make([]byte, 84)
+	copy(header[:4], "MZ03")
+	binary.BigEndian.PutUint64(header[4:12], taskId)
 	binary.BigEndian.PutUint32(header[12:16], uint32(len(wasmBytes)))
 	binary.BigEndian.PutUint32(header[16:20], uint32(len(dataBytes)))
+	copy(header[20:84], signature)
 
 	s.Write(header)
 	s.Write(wasmBytes)
 	s.Write(dataBytes)
 
-	// 5. Read the execution result back from the stream and forward it to the HTTP client
 	resultBytes, _ := io.ReadAll(s)
 
 	res.Header().Set("Content-Type", "text/plain")
 	res.Write(resultBytes)
 }
 
-// corsMiddleware allows the local React/HTML dashboard to talk to this API
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")

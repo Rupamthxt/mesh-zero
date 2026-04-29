@@ -3,9 +3,12 @@ package core
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"os"
 	"sync"
 	"time"
 
@@ -27,12 +30,6 @@ type Worker struct {
 	Host  host.Host
 	Hooks []ExtensionHook
 }
-
-// type discoveryNotifee struct{}
-
-// func (n *discoveryNotifee) HandlePeerFound(pi peer.AddrInfo) {
-// 	fmt.Printf("[mDNS] Worker saw peer on network: %s\n", pi.ID)
-// }
 
 var completedTasks = make(map[uint64]bool)
 var taskMu sync.Mutex
@@ -136,17 +133,36 @@ func (w *Worker) Start(ctx context.Context, enableApi bool, apiPort string) erro
 func (w *Worker) handleTaskStream(ctx context.Context, s network.Stream) {
 	defer s.Close()
 
-	header := make([]byte, 20)
+	header := make([]byte, 84)
 	if _, err := io.ReadFull(s, header); err != nil {
 		return
 	}
-	if string(header[:4]) != "MZ02" {
+	if string(header[:4]) != "MZ03" {
+		fmt.Println("[SECURITY] Dropped connection: Invalid protocol magic.")
 		return
 	}
 
 	taskID := binary.BigEndian.Uint64(header[4:12])
 	wasmLen := binary.BigEndian.Uint32(header[12:16])
 	paramLen := binary.BigEndian.Uint32(header[16:20])
+	signature := header[20:84]
+
+	pubHex := os.Getenv("MESH_PUB_KEY")
+	if pubHex == "" {
+		fmt.Println("[SECURITY] Worker is missing MESH_PUB_KEY. Dropping task.")
+		return
+	}
+	pubKey, _ := hex.DecodeString(pubHex)
+
+	verifyData := make([]byte, 16)
+	binary.BigEndian.PutUint64(verifyData[0:8], taskID)
+	binary.BigEndian.PutUint32(verifyData[8:12], wasmLen)
+	binary.BigEndian.PutUint32(verifyData[12:16], paramLen)
+
+	if !ed25519.Verify(ed25519.PublicKey(pubKey), verifyData, signature) {
+		fmt.Printf("[SECURITY] INTRUSION BLOCKED! Invalid signature from peer: %s\n", s.Conn().RemotePeer())
+		return
+	}
 
 	taskMu.Lock()
 	if completedTasks[taskID] {

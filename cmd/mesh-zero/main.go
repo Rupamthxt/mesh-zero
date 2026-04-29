@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -31,6 +33,19 @@ func main() {
 		inputPath := os.Args[3]
 		fmt.Printf("Submitting %s to the mesh...\n", wasmPath)
 		core.RunSender(wasmPath, inputPath)
+	case "keygen":
+		pub, priv, err := ed25519.GenerateKey(nil)
+		if err != nil {
+			fmt.Printf("Failed to generate key : %d\n", err)
+			return
+		}
+		fmt.Printf("PUBLIC KEY (Give to Workers): %s\n", hex.EncodeToString(pub))
+		fmt.Printf("PRIVATE KEY (Keep Secret)   : %s\n", hex.EncodeToString(priv))
+		fmt.Println("--------------------------------------------------")
+		fmt.Println("Export these as environment variables before starting nodes:")
+		fmt.Println("export MESH_PUB_KEY=<your_public_key>")
+		fmt.Println("export MESH_PRIV_KEY=<your_private_key>")
+
 	default:
 		fmt.Printf("Unknown command: %s\n", command)
 		printUsage()
