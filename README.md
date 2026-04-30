@@ -10,24 +10,25 @@ It allows you to turn any group of devices—from MacBooks to Raspberry Pis—in
 
 ## Core Features
 
-* **Zero Infrastructure:** Nodes automatically discover each other via local `mDNS` or the global Kademlia DHT. No central databases or API servers are needed.
+* **Zero Infrastructure:** Nodes automatically discover each other via the global Kademlia DHT. No central databases or API servers are needed.
 * **Global NAT Traversal:** Built-in UPnP and AutoRelay allow nodes to securely connect across the public internet, even behind strict home routers and firewalls.
 * **Sandboxed Execution:** Untrusted `.wasm` payloads are executed using [wazero](https://github.com/tetratelabs/wazero). The engine strictly enforces memory ceilings (6.4MB max) and execution timeouts (5-second fuel limit) natively in Go, preventing infinite loops and malicious payloads.
-* **Idempotent Atomic Scheduling:** Uses a custom `MZ02` binary protocol with double-checked locking and thread-safe caching to ensure a payload is only ever executed once, even during mDNS discovery storms.
+* **Idempotent Atomic Scheduling:** Uses a custom `MZ03` binary protocol with double-checked locking and thread-safe caching to ensure a payload is only ever executed once, even during mDNS discovery storms.
 * **Embedded Control Plane:** Features a zero-dependency Visual Dashboard compiled directly into the binary using `//go:embed`.
 
 ---
 
-## The `MZ02` Wire Protocol
+## The `MZ03` Wire Protocol
 
-To eliminate HTTP overhead, Mesh-Zero nodes communicate via multiplexed `libp2p` streams using a highly optimized 20-byte binary header.
+To eliminate HTTP overhead, Mesh-Zero nodes communicate via multiplexed `libp2p` streams using a highly optimized 84-byte binary header.
 
 | Field | Type | Size | Description |
 | :--- | :--- | :--- | :--- |
-| **Magic** | `[4]byte` | 4 Bytes | Protocol Identifier (`MZ02`). |
+| **Magic** | `[4]byte` | 4 Bytes | Protocol Identifier (`MZ03`). |
 | **TaskID** | `uint64` | 8 Bytes | Unique ID to prevent double-execution across the mesh. |
 | **WasmLen** | `uint32` | 4 Bytes | Byte size of the executable payload. |
 | **ParamLen**| `uint32` | 4 Bytes | Byte size of the Stdin parameter data. |
+| **Signature** | `[64]byte` | 64 Bytes | ed25519 hash of the header data for verification of the header |
 | **Payload** | `[]byte` | Variable | The `.wasm` binary followed immediately by the input data. |
 
 ---
@@ -46,7 +47,22 @@ cd mesh-zero
 go build -o mesh-zero cmd/mesh-zero/main.go
 ```
 
-### 2. Start a Worker Node
+### 2. Generate a public and private key
+The key acts as a security to verify if the payload is from a ledgit worker.
+```bash
+./mesh-zero keygen
+```
+Output:
+```bash
+PUBLIC KEY (Give to Workers): Public Key
+PRIVATE KEY (Keep Secret): Private Key
+--------------------------------------------------
+Export these as environment variables before starting nodes:
+export MESH_PUB_KEY=<your_public_key>
+export MESH_PRIV_KEY=<your_private_key>
+```
+
+### 3. Start a Worker Node
 The Worker acts as the compute engine. It binds to all interfaces, advertises itself via DTH, and listens for WASM payloads.
 
 ```bash
@@ -57,7 +73,7 @@ Output:
 ```bash
 Worker Node 12D3KooW... listening. Waiting for tasks...
 ```
-### 3. Compile a WASM task
+### 4. Compile a WASM task
 Write a generic task in Go. Mesh-Zero uses `os.Stdin` to inject parameters and `os.Stdout` to stream results.
 ```bash
 # hasher.go
@@ -81,7 +97,7 @@ Compile it to a lightweight WASI binary:
 ```bash
 tinygo build -o hasher.wasm -target=wasi hasher.go
 ```
-### 4. Submit the task via the sender
+### 5. Submit the task via the sender
 The Sender acts as a load balancer. It discovers available Workers, atomically locks a stream, and blasts the payload.
 
 Create a data file to process:
@@ -92,6 +108,8 @@ Send it to the mesh:
 ```bash
 ./mesh-zero run hasher.wasm input.txt
 ```
+Or use the dashboard to upload the task
+
 The CLI will ping your local daemon, locate a remote peer on the global DHT, transmit the payload, and stream the standard output back to your terminal in milliseconds.
 
 ## Contributing
